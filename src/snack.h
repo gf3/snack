@@ -90,7 +90,17 @@ static Buffer *current_buffer;                 // Current buffer
 static Mode    current_mode;                   // Current mode of the editor
 static long    current_status;                 // Current status of the editor
 
-/* Editor functions */
-static int editor_move(); // Go places
+/* Actions */
+void action_quit();
+void action_mode_insert();
+void action_mode_normal();
+void action_move_nextline(Buffer *b, Selection *s);
+void action_move_prevline(Buffer *b, Selection *s);
+void action_move_nextchar(Buffer *b, Selection *s);
+void action_move_prevchar(Buffer *b, Selection *s);
+void action_move_bof(Buffer *b, Selection *s);
+void action_move_eof(Buffer *b, Selection *s);
+void action_move_bol(Buffer *b, Selection *s);
+void action_move_eol(Buffer *b, Selection *s);
 
 #endif /* ifndef SNACK_H */
