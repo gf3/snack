@@ -65,6 +65,7 @@ typedef struct Selection {
 
 typedef struct Buffer {
   Position *cursor;                            // Position in buffer
+  int       offset_prev;                       // Previous cursor offset, used for maintaining column on vertical movement
   char     *filename;                          // Filename
   Line     *first_line;                        // First line of file
   Line     *last_line;                         // Last line of file

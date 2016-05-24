@@ -228,6 +228,7 @@ void internal_loadfile(Buffer *buffer) {
 void internal_paint() {
   int i;
   Line *l;
+  int cursor_row = 0;
   unsigned int total_lines = 0;
 
   // Paint editor window
@@ -247,6 +248,10 @@ void internal_paint() {
       if ((int)mbstowcs(row, l->c, cols) == ERR)
         err(errno, "Unable to convert multi-byte string to widechar string");
       mvwaddwstr(editor_window, (rows_visible - rows_left), 0, row);
+
+      if (l == current_buffer->cursor->line)
+        cursor_row = (rows_visible - rows_left);
+
       rows_left--;
 
       l = l->next;
@@ -255,7 +260,7 @@ void internal_paint() {
 
   // Cursor
   if (current_buffer->cursor->line)
-    wmove(editor_window, 0, current_buffer->cursor->offset);
+    wmove(editor_window, cursor_row, current_buffer->cursor->offset);
 
   switch (current_mode) {
     case Mode_insert:
@@ -271,13 +276,14 @@ void internal_paint() {
       printf(CURSOR_BLOCK);
 
   }
+
   // Paint status window
   wmove(status_window, 0, 0);
   for (i = 0; i < cols; i++)
     waddch(status_window, ' ');
-  wclrtoeol(status_window);
 
   // Count lines
+  // TODO: Cache
   if ((l = current_buffer->first_line)) {
     total_lines = 1;
     while ((l = l->next))
@@ -291,9 +297,9 @@ void internal_paint() {
     snprintf(title, BUFSIZ, "Snack %s (%s) ␤%d,%d:%d",
         (current_buffer->filename ? current_buffer->filename : "<No Name>"),
         (current_mode == Mode_insert ? "Insert" : "Normal"),
-        0,
+        (cursor_row + 1),
         total_lines,
-        (current_buffer->cursor->offset));
+        (current_buffer->cursor->offset + 1));
   }
 
   title_temp = NULL;
