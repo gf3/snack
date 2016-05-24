@@ -1,6 +1,6 @@
 include config.mk
 
-.PHONY: default all clean
+.PHONY: default all clean cloc
 
 # default: $(TARGET)
 default: all
@@ -27,6 +27,10 @@ clean:
 	rm -rf $(DEPENDS)
 	rm -rf $(OBJECTS)
 	rm -rf $(TARGET)
+
+cloc:
+	cloc --not-match-f=tags --not-match-f=ycm --not-match-d=build .
+
 options:
 	@echo build options:
 	@echo "CFLAGS   = $(CFLAGS)"
