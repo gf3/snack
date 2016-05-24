@@ -16,7 +16,7 @@ LIBS = -L/usr/lib -lc -lncurses
 
 # flags
 CPPFLAGS = -DVERSION=\"${VERSION}\" -DSIGWINCH=28
-CFLAGS = -g -std=c11 -x c -Wall -Wextra -pedantic -O0 ${INCS} ${CPPFLAGS}
+CFLAGS = -g -std=c11 -x c -Wall -Wextra -pedantic -Wno-unused-parameter -O0 ${INCS} ${CPPFLAGS}
 LDFLAGS = ${LIBS}
 
 # compiler and linker
