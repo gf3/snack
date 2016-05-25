@@ -1,19 +1,28 @@
 #include "snack.h"
 
 /* Compound actions */
-void _mv_nextchar_md_insert(Buffer *b, Selection *s) {
+bool _mv_nextchar_md_ins(Buffer *b, Selection *s) {
   action_move_nextchar(b, s);
   action_mode_insert(b, s);
+  return false;
 }
 
-void _mv_eol_md_insert(Buffer *b, Selection *s) {
+bool _mv_eol_md_ins(Buffer *b, Selection *s) {
   action_move_eol(b, s);
   action_mode_insert(b, s);
+  return true;
 }
 
-void _mv_bol_md_insert(Buffer *b, Selection *s) {
+bool _mv_bol_md_ins(Buffer *b, Selection *s) {
   action_move_bol(b, s);
   action_mode_insert(b, s);
+  return true;
+}
+
+bool _in_line_md_ins(Buffer *b, Selection *s) {
+  action_insert_line(b, s);
+  action_mode_insert(b, s);
+  return false;
 }
 
 /* Key mappings */
@@ -35,7 +44,10 @@ static const KeyMapping key_maps[] = {
   { .mode = Mode_normal, .operator = "$",    .action = action_move_eol },
 
   // Movement + action
-  { .mode = Mode_normal, .operator = "a",    .action = _mv_nextchar_md_insert },
-  { .mode = Mode_normal, .operator = "A",    .action = _mv_eol_md_insert },
-  { .mode = Mode_normal, .operator = "I",    .action = _mv_bol_md_insert },
+  { .mode = Mode_normal, .operator = "a",    .action = _mv_nextchar_md_ins },
+  { .mode = Mode_normal, .operator = "A",    .action = _mv_eol_md_ins },
+  { .mode = Mode_normal, .operator = "I",    .action = _mv_bol_md_ins },
+
+  // Insertion + action
+  { .mode = Mode_normal, .operator = "o",    .action = _in_line_md_ins },
 };

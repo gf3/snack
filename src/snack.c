@@ -4,13 +4,14 @@
 #include "config.h"
 
 /* Internal functions */
-static void internal_command();                // Command processing
-static void internal_edit();                   // Main edit loop
-static void internal_exit();                   // Gracefully exit
-static void internal_loadfile(Buffer *buffer); // Load file
-static void internal_paint();                  // Repaint screen
-static void internal_setup();                  // Setup editor
-static void internal_term();                   // Initialize terminal
+static bool internal_command();                    // Command processing
+static void internal_edit();                       // Main edit loop
+static void internal_exit();                       // Gracefully exit
+static void internal_loadfile(Buffer *buffer);     // Load file
+static void internal_paint();                      // Repaint screen
+static void internal_setup();                      // Setup editor
+static void internal_term();                       // Initialize terminal
+static Position *internal_insert(Position *p, char *c, size_t size); // Parse and insert data at position
 
 /* Safe memory function wrappers */
 static void *safe_calloc(size_t nmemb, size_t size);
@@ -25,8 +26,8 @@ int main(int argc, char *argv[]) {
   internal_setup();
 
   // TMP
-  current_buffer->filename = (argc > 1 ?
-      safe_strdup(argv[1]) : safe_strdup("/tmp/lol.c"));
+  if (argc > 1)
+    current_buffer->filename = safe_strdup(argv[1]);
 
   internal_loadfile(current_buffer);
   internal_edit();
@@ -40,7 +41,7 @@ int main(int argc, char *argv[]) {
  * Internal functions
  */
 
-void internal_command() {
+bool internal_command() {
   unsigned int i;
   int c_length = strlen(c);
   Selection s = {
@@ -51,11 +52,12 @@ void internal_command() {
   for (i = 0; i < ARRAY_LENGTH(key_maps); ++i) {
     if (key_maps[i].mode == current_mode) {
       if (strncmp(c, key_maps[i].operator, c_length) == 0) {
-        key_maps[i].action(current_buffer, &s);
-        break;
+        return key_maps[i].action(current_buffer, &s);
       }
     }
   }
+
+  return true;
 }
 
 void internal_edit() {
@@ -75,7 +77,14 @@ void internal_edit() {
     if (ch >= KEY_MIN)
       continue;
 
-    internal_command();
+    if (!internal_command())
+      continue;
+
+    if (current_mode == Mode_insert) {
+      // TODO: Move to action
+      current_buffer->cursor = internal_insert(current_buffer->cursor, c, strlen(c));
+      current_status |= Status_dirty;
+    }
   }
 }
 
@@ -98,20 +107,110 @@ void internal_exit() {
   endwin();
 }
 
-void internal_loadfile(Buffer *buffer) {
+Position *internal_insert(Position *p, char *c, size_t size) {
   unsigned int  i;
   unsigned int  i_prev;
-  int           fd;
-  ssize_t       bytes_read;
-  char          file_buffer[BUFSIZ];
-  char         *line_buffer = NULL;
-  size_t        line_buffer_capacity = 0;
-  size_t        line_buffer_size = 0;
-  Line         *l = NULL;
-  Line         *l_prev = NULL;
+  Position     *end_p;
+  char         *append_buffer = NULL;
+  unsigned int  append_length = 0;
+  Line         *l             = p->line;
+  Line         *l_next        = NULL;
+  unsigned int  p_offset      = p->offset;
+
+  end_p = (Position *)safe_calloc(1, sizeof(Position));
+  end_p->line = p->line;
+  end_p->offset = p->offset;
+
+  // XXX: Should I require a line or should I insert a line and set it to first
+  // if NULL?
+  // TODO: Possibly check to see if we're inserting between a multibyte char
+
+  // Split into lines
+  for (i_prev = i = 0; i <= size; i++) {
+    if ((c[i] == '\n') || (c[i] == '\0')) {
+      size_t diff = (i - i_prev);
+      size_t buckets = BUCKETS(l->length + diff);
+      size_t offset = ((size_t)c + i_prev);
+
+      // Resize
+      if (l->buckets < buckets) {
+        size_t capacity = (buckets * LINSIZ) + 1;
+        l->buckets = buckets;
+        l->c = safe_realloc(l->c, capacity);
+      }
+
+      // Insert in middle of line?
+      if ((int)p_offset != l->visual_length) {
+        append_length = (l->length - p_offset);
+        append_buffer = safe_calloc(append_length, sizeof(char));
+        memcpy(append_buffer, (l->c + p_offset), append_length);
+        memset((l->c + p_offset), 0, append_length); // XXX: append_length may need a +1
+        l->length -= append_length;
+      }
+
+      memcpy((l->c + p_offset), (void *)offset, diff);
+      l->length += diff;
+      l->visual_length = utf8_characters(l->c);
+      l->c[l->length] = '\0';
+      l->dirty = true;
+
+      if (c[i] == '\n') {
+        l_next = (Line *)safe_calloc(1, sizeof(Line));
+        l->dirty = true;
+        l_next->length = 0;
+        l_next->visual_length = 0;
+        l_next->buckets = 1;
+        l_next->c = (char *)safe_calloc(LINSIZ + 1, sizeof(char));
+        l_next->prev = l;
+        l_next->next = l->next;
+        l_next->prev->next = l_next;
+        if (l_next->next)
+          l_next->next->prev = l_next;
+
+        l = l_next;
+        i_prev = i + 1; // Skip new line character
+      }
+
+      // Insertion point for next line
+      p_offset = l->visual_length;
+    }
+  }
+
+  // Final append
+  if (append_buffer) {
+    size_t buckets = BUCKETS(l->length + append_length);
+
+    if (buckets < l->buckets) {
+      l->buckets = buckets;
+      l->c = safe_realloc(l->c, (l->length + append_length + 1));
+      memset((l->c + p_offset), 0, (append_length + 1));
+    }
+
+    memcpy((l->c + p_offset), append_buffer, append_length);
+    l->length += append_length;
+    l->visual_length = utf8_characters(l->c);
+    l->c[l->length] = '\0';
+    l->dirty = true;
+    free(append_buffer);
+  }
+
+  // Update selection
+  end_p->line = l;
+  end_p->offset = p_offset;
+
+  return end_p;
+}
+
+void internal_loadfile(Buffer *buffer) {
+  int       fd;
+  ssize_t   bytes_read;
+  char      file_buffer[BUFSIZ + 1];
+  Position *last_position = buffer->cursor;
 
   if (!buffer->filename)
     return;
+
+  // TODO: Remove lines in buffer and reset cursor?
 
   if ((fd = open(buffer->filename, O_RDONLY | O_CREAT)) == -1)
     err(errno, "Unable to open file: %s", buffer->filename);
@@ -119,108 +218,14 @@ void internal_loadfile(Buffer *buffer) {
   while ((bytes_read = read(fd, file_buffer, BUFSIZ))) {
     if (bytes_read == -1)
       err(errno, "Unable to read file: %s", buffer->filename);
-
-    // Split into lines
-    for (i_prev = i = 0; i < bytes_read; i++) {
-      if (file_buffer[i] == '\n') {
-        l = (Line *)safe_calloc(1, sizeof(Line));
-        l->length = 0;
-        l->visual_length = 0;
-        l->c = NULL;
-        l->prev = NULL;
-        l->next = NULL;
-
-        // Link lines
-        if (l_prev) {
-          l_prev->next = l;
-          l->prev = l_prev;
-        }
-        else
-          buffer->first_line = l;
-
-        // Copy characters to line
-        size_t diff = (i - i_prev);
-        size_t offset = ((size_t)file_buffer + i_prev);
-
-        if (line_buffer) {
-          line_buffer_capacity += (BUCKETS(diff) * LINSIZ) + 1;
-          line_buffer = safe_realloc(line_buffer, line_buffer_capacity);
-          line_buffer[line_buffer_capacity] = '\0';
-          memset((line_buffer + line_buffer_size), 0, (line_buffer_capacity - line_buffer_size));
-          memcpy((line_buffer + line_buffer_size), (void *)offset, diff);
-
-          l->c = line_buffer;
-          l->length = (line_buffer_size + diff);
-          l->visual_length = utf8_characters(l->c);
-
-          line_buffer = NULL;
-          line_buffer_capacity = line_buffer_size = 0;
-        }
-        else {
-          size_t capacity = (BUCKETS(diff) * LINSIZ) + 1;
-          l->c = safe_calloc(capacity, sizeof(char));
-          memcpy(l->c, (void *)offset, diff);
-          l->length = diff;
-          l->visual_length = utf8_characters(l->c);
-        }
-
-        // Retain previous line for linking
-        i_prev = i + 1;
-        l_prev = l;
-      }
-    }
-
-    // Append line_buffer if line wasn't consumed
-    if (i_prev < (bytes_read - 1)) {
-      size_t diff = (i - i_prev);
-      size_t offset = ((size_t)file_buffer + i_prev);
-
-      if (!line_buffer) {
-        line_buffer_capacity = (BUCKETS(diff) * LINSIZ);
-        line_buffer_size = 0;
-        line_buffer = safe_calloc(line_buffer_capacity, sizeof(char));
-      }
-      else if ((line_buffer_size + diff) >= line_buffer_capacity) {
-        // Not enough space in line buffer, add more buckets
-        line_buffer_capacity += (BUCKETS(diff) * LINSIZ);
-        line_buffer = safe_realloc(line_buffer, line_buffer_capacity);
-        memset((line_buffer + line_buffer_size), 0, (line_buffer_capacity - line_buffer_size));
-      }
-
-      memcpy((line_buffer + line_buffer_size), (void *)offset, diff);
-      line_buffer_size += diff;
-    }
-  }
-
-  // Dangling line
-  if (line_buffer) {
-    l = (Line *)safe_calloc(1, sizeof(Line));
-    l->length = 0;
-    l->visual_length = 0;
-    l->c = NULL;
-    l->prev = NULL;
-    l->next = NULL;
-
-    // Link lines
-    if (l_prev) {
-      l_prev->next = l;
-      l->prev = l_prev;
-    }
-    else
-      buffer->first_line = l;
-
-    l->c = line_buffer;
-    l->length = line_buffer_size;
-    l->visual_length = utf8_characters(l->c);
-
-    line_buffer = NULL;
-    line_buffer_capacity = line_buffer_size = 0;
+    file_buffer[BUFSIZ] = '\0';
+    last_position = internal_insert(last_position, file_buffer, bytes_read);
   }
 
   if (close(fd) == ERR)
     err(errno, "Unable to close file");
 
-  buffer->last_line = l;
+  buffer->last_line = last_position->line;;
   buffer->cursor->line = buffer->first_line;
   buffer->cursor->offset = 0;
 }
@@ -243,11 +248,17 @@ void internal_paint() {
     rows_left = rows_visible;
 
     while (rows_left && l) {
-      wchar_t row[cols];
-      memset(row, '\0', cols);
-      if ((int)mbstowcs(row, l->c, cols) == ERR)
-        err(errno, "Unable to convert multi-byte string to widechar string");
-      mvwaddwstr(editor_window, (rows_visible - rows_left), 0, row);
+      /* if (l->dirty) { */
+        wchar_t row[cols];
+        memset(row, '\0', cols);
+        if ((int)mbstowcs(row, l->c, cols) == ERR)
+          err(errno, "Unable to convert multi-byte string to widechar string");
+        wmove(editor_window, (rows_visible - rows_left), 0);
+        wclrtoeol(editor_window);
+        waddwstr(editor_window, row);
+        /* mvwaddwstr(editor_window, (rows_visible - rows_left), 0, row); */
+        /* l->dirty = false; */
+      /* } */
 
       if (l == current_buffer->cursor->line)
         cursor_row = (rows_visible - rows_left);
@@ -294,8 +305,9 @@ void internal_paint() {
     snprintf(title, BUFSIZ, "%s", title_temp);
   }
   else {
-    snprintf(title, BUFSIZ, "Snack %s (%s) ␤%d,%d:%d",
+    snprintf(title, BUFSIZ, "Snack %s%s (%s) ␤%d,%d:%d",
         (current_buffer->filename ? current_buffer->filename : "<No Name>"),
+        (current_status & Status_dirty ? "[+]" : ""),
         (current_mode == Mode_insert ? "Insert" : "Normal"),
         (cursor_row + 1),
         total_lines,
@@ -313,8 +325,22 @@ void internal_paint() {
 }
 
 void internal_setup() {
+  Line *l = (Line *)safe_calloc(1, sizeof(Line));
+  l->dirty = true;
+  l->c = (char *)safe_calloc(LINSIZ + 1, sizeof(char));
+  l->buckets = 1;
+  l->length = 0;
+  l->visual_length = 0;
+  l->prev = NULL;
+  l->next = NULL;
+
   current_buffer = (Buffer *)safe_calloc(1, sizeof(Buffer));
   current_buffer->cursor = (Position *)safe_calloc(1, sizeof(Position));
+  current_buffer->cursor->offset = 0;
+  current_buffer->cursor->line = l;
+  current_buffer->offset_prev = 0;
+  current_buffer->first_line = l;
+  current_buffer->last_line = l;
   current_mode = Mode_normal;
   current_status = Status_running;
 
@@ -404,19 +430,22 @@ static char *safe_strdup(const char *s) {
  * Actions
  */
 
-void action_quit() {
+bool action_quit() {
   current_status &= ~Status_running;
+  return true;
 }
 
-void action_mode_insert() {
+bool action_mode_insert() {
   current_mode = Mode_insert;
+  return false;
 }
 
-void action_mode_normal() {
+bool action_mode_normal() {
   current_mode = Mode_normal;
+  return false;
 }
 
-void action_move_nextline(Buffer *b, Selection *s) {
+bool action_move_nextline(Buffer *b, Selection *s) {
   Position *c = b->cursor;
   Line *l = c->line;
 
@@ -430,9 +459,11 @@ void action_move_nextline(Buffer *b, Selection *s) {
   }
   else
     b->offset_prev = c->offset = l->visual_length;
+
+  return true;
 }
 
-void action_move_prevline(Buffer *b, Selection *s) {
+bool action_move_prevline(Buffer *b, Selection *s) {
   Position *c = b->cursor;
   Line *l = c->line;
 
@@ -446,24 +477,30 @@ void action_move_prevline(Buffer *b, Selection *s) {
   }
   else
     b->offset_prev = c->offset = 0;
+
+  return true;
 }
 
-void action_move_nextchar(Buffer *b, Selection *s) {
+bool action_move_nextchar(Buffer *b, Selection *s) {
   Position *c = b->cursor;
   Line *l = c->line;
 
   if (c->offset < l->visual_length)
     b->offset_prev = ++(c->offset);
+
+  return true;
 }
 
-void action_move_prevchar(Buffer *b, Selection *s) {
+bool action_move_prevchar(Buffer *b, Selection *s) {
   Position *c = b->cursor;
 
   if (c->offset > 0)
     b->offset_prev = --(c->offset);
+
+  return true;
 }
 
-void action_move_bof(Buffer *b, Selection *s) {
+bool action_move_bof(Buffer *b, Selection *s) {
   Position *c = b->cursor;
   Line *l = b->first_line;
 
@@ -473,9 +510,11 @@ void action_move_bof(Buffer *b, Selection *s) {
     c->offset = l->visual_length;
   else if (b->offset_prev != c->offset)
     c->offset = b->offset_prev;
+
+  return true;
 }
 
-void action_move_eof(Buffer *b, Selection *s) {
+bool action_move_eof(Buffer *b, Selection *s) {
   Position *c = b->cursor;
   Line *l = b->last_line;
 
@@ -485,12 +524,31 @@ void action_move_eof(Buffer *b, Selection *s) {
     c->offset = l->visual_length;
   else if (b->offset_prev != c->offset)
     c->offset = b->offset_prev;
+
+  return true;
 }
 
-void action_move_bol(Buffer *b, Selection *s) {
+bool action_move_bol(Buffer *b, Selection *s) {
   b->offset_prev = b->cursor->offset = 0;
+  return true;
 }
 
-void action_move_eol(Buffer *b, Selection *s) {
+bool action_move_eol(Buffer *b, Selection *s) {
   b->offset_prev = b->cursor->offset = b->cursor->line->visual_length;
+  return true;
+}
+
+bool action_insert_line(Buffer *b, Selection *s) {
+  action_move_eol(b, s);
+
+  b->cursor = internal_insert(b->cursor, "\n", 1);
+
+  current_status |= Status_dirty;
+
+  action_move_bol(b, s);
+
+  // XXX: This might not work if the cursor is moved, maybe repaint whole screen?
+  wclrtobot(editor_window);
+
+  return true;
 }
